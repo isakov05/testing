@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Jupyter and data
+.ipynb_checkpoints/
+*.sqlite3
+*.db
+*.parquet
+*.csv
+# *.xlsx
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# E-IMZO
+e-imzo-server/
+/companies_data/
+

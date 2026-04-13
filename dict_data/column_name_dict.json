@@ -1,0 +1,40 @@
+{
+  "invoice_columns": {
+    "Номер документ": "Document Number",
+    "Дата документ": "Document Date",
+    "Продавец (ИНН или ПИНФЛ)": "Seller (Tax ID or PINFL)",
+    "Продавец (наименование)": "Seller (Name)",
+    "Продавец (код филиала)": "Seller Branch Code",
+    "Продавец (название филиала)": "Seller Branch Name",
+    "Покупатель (ИНН или ПИНФЛ)": "Buyer (Tax ID or PINFL)",
+    "Покупатель (наименование)": "Buyer (Name)",
+    "Покупатель (код филиала)": "Buyer Branch Code",
+    "Покупатель (название филиала)": "Buyer Branch Name",
+    "Стоимость поставки": "Supply Value",
+    "НДС сумма": "VAT Amount",
+    "Стоимость поставки с учётом НДС": "Supply Value (incl. VAT)",
+    "СТАТУС": "Status",
+    "Договор номер": "Contract Number",
+    "Договор дата": "Contract Date",
+    "ТИП документ": "Document Type",
+    "Вид документ": "Document Kind",
+    "Дата отправки": "Send Date",
+    "ПРИМЕЧАНИЕ": "Note",
+    "Примечание к товару (работе, услуге)": "Item Note"
+  },
+  "bank_statement_columns": {
+    "Дата операции": "Transaction Date",
+    "Номер документа": "Document Number",
+    "Дата документа": "Document Date",
+    "Дата обработки": "Processing Date",
+    "ИНН контрагента": "Counterparty INN",
+    "Наименование контрагента": "Counterparty Name",
+    "Счет контрагента": "Counterparty Account",
+    "МФО контрагента": "Counterparty Bank Code",
+    "Сумма": "Amount",
+    "Дебет оборот": "Debit Turnover",
+    "Кредит оборот": "Credit Turnover",
+    "Назначение платежа": "Payment Purpose",
+    "Номер договора": "Contract Number"
+  }
+}

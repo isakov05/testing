@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  streamlit:
+    image: python:3.11-slim
+    container_name: flott-streamlit
+    restart: always
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: bash -c "pip install -r requirements.txt && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+    environment:
+      - VIRTUAL_HOST=flot.uz
+      - VIRTUAL_PORT=8501
+      - LETSENCRYPT_HOST=flot.uz
+      - LETSENCRYPT_EMAIL=flottme@gmail.com
+      # Increase nginx upload size limit (default is 1MB)
+      - NGINX_CLIENT_MAX_BODY_SIZE=100M
+      # Database connection - using existing platform PostgreSQL
+      - DATABASE_URL=postgresql://postgres:${DATABASE_PASSWORD}@flott-platform-back-postgres-1:5432/${STREAMLIT_DB_NAME:-flott_streamlit}
+      - POSTGRES_HOST=flott-platform-back-postgres-1
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${STREAMLIT_DB_NAME:-flott_streamlit}
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
+    networks:
+      - flott-network
+    expose:
+      - "8501"
+
+networks:
+  flott-network:
+    external: true
