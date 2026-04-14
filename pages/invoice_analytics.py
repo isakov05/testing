@@ -11,6 +11,13 @@ from datetime import datetime, date, timedelta
 
 from auth.db_authenticator import protect_page
 from utils.db_operations import load_user_invoices, load_user_bank_transactions
+from utils.integration_loader import (
+    load_integration_invoices,
+    load_integration_invoices_by_tin,
+    load_integration_items_by_tin,
+    get_user_company_tin,
+    get_all_companies,
+)
 from utils.db_helper import get_db_engine
 from utils.risk_engine import RiskEngine, load_risk_config
 from utils.risk_queries import get_all_invoices_and_payments, calculate_counterparty_lookback_period
@@ -81,25 +88,35 @@ if not user_id:
 
 uid = str(user_id)
 
-# Try loading from DB first
-raw_out = load_user_invoices(uid, 'OUT')
-raw_in = load_user_invoices(uid, 'IN')
+# Get the company tied to this user
+company_tin = get_user_company_tin(uid)
+if not company_tin:
+    st.error("No company linked to your account. Contact admin to assign a company TIN.")
+    st.stop()
 
-# Fallback: check session state (upload page stores data there directly)
-if raw_out.empty:
-    ss_out = st.session_state.get('invoices_out_processed')
-    if ss_out is not None and not ss_out.empty:
-        raw_out = ss_out
-        st.caption("Using invoice data from session (not yet in DB)")
+# Look up company name from the dataset
+@st.cache_data(ttl=600)
+def _get_company_name(tin):
+    from utils.db_helper import get_db_engine
+    engine = get_db_engine()
+    q = """
+        SELECT COALESCE(
+            (SELECT seller_name FROM integration.invoices WHERE seller_tin = %(tin)s LIMIT 1),
+            (SELECT buyer_name FROM integration.invoices WHERE buyer_tin = %(tin)s LIMIT 1)
+        )
+    """
+    result = pd.read_sql_query(q, engine, params={'tin': tin})
+    return result.iloc[0, 0] if not result.empty else 'Unknown'
 
-if raw_in.empty:
-    ss_in = st.session_state.get('invoices_in_processed')
-    if ss_in is not None and not ss_in.empty:
-        raw_in = ss_in
-        st.caption("Using invoice data from session (not yet in DB)")
+company_name = _get_company_name(company_tin)
+st.caption(f"**{company_name}** (INN: {company_tin})")
+
+# Load from integration.invoices for user's company
+raw_out = load_integration_invoices_by_tin(company_tin, 'OUT')
+raw_in = load_integration_invoices_by_tin(company_tin, 'IN')
 
 if raw_out.empty and raw_in.empty:
-    st.info("No invoices found. Upload invoices first.")
+    st.info("No invoices found for your company.")
     st.stop()
 
 # Check if bank data exists
@@ -457,56 +474,154 @@ with ag2:
         st.info("No purchase invoices")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Section 5: Product Explorer
+# Section 5: Product Analytics (from integration.invoice_items)
 # ═══════════════════════════════════════════════════════════════════════════
-notes_col = 'Примечание к товару (работе, услуге)'
-if not sales_period.empty and notes_col in sales_period.columns:
-    _pn = sales_period[sales_period[notes_col].notna() & (sales_period[notes_col].str.strip() != '')].copy()
-    if not _pn.empty:
-        st.markdown("---")
-        st.markdown("### Product Explorer")
-        _pn['_amt'] = pd.to_numeric(_pn[AMT_COL], errors='coerce').fillna(0)
+st.markdown("---")
+st.markdown("### Product Analytics")
 
-        pe1, pe2, pe3 = st.columns(3)
-        with pe1:
-            st.metric("Products", f"{_pn[notes_col].nunique():,}")
-        with pe2:
-            coverage = len(_pn) / len(sales_period) * 100
-            st.metric("Coverage", f"{coverage:.0f}%")
-        with pe3:
-            st.metric("Product Revenue", fmt(_pn['_amt'].sum()))
+prod_direction = st.radio("Direction", ["Selling (OUT)", "Buying (IN)"],
+                          horizontal=True, key="prod_dir")
+prod_type = 'OUT' if 'OUT' in prod_direction else 'IN'
 
-        pr1, pr2 = st.columns(2)
-        with pr1:
-            st.markdown("**By Revenue**")
-            top_rev = _pn.groupby(notes_col)['_amt'].sum().sort_values(ascending=False).head(15)
-            fig = px.bar(x=top_rev.values,
-                         y=[n[:50] + '...' if len(n) > 50 else n for n in top_rev.index],
-                         orientation='h', labels={'x': 'Revenue', 'y': ''},
-                         color=top_rev.values, color_continuous_scale='Oranges')
-            fig.update_layout(height=500, showlegend=False, margin=dict(l=20, r=20, t=10, b=20))
+items_df = load_integration_items_by_tin(company_tin, prod_type,
+                                          start_date=start_dt.date(), end_date=end_dt.date())
+
+if items_df.empty:
+    st.info(f"No product data for {prod_type} in this period.")
+else:
+    items_df['final_sum'] = pd.to_numeric(items_df['final_sum'], errors='coerce').fillna(0)
+    items_df['quantity'] = pd.to_numeric(items_df['quantity'], errors='coerce').fillna(0)
+    items_df['catalog_name'] = items_df['catalog_name'].fillna('(Unknown)').astype(str).str.strip()
+    items_df['catalog_code'] = items_df['catalog_code'].fillna('').astype(str)
+
+    # KPI row
+    pk1, pk2, pk3, pk4 = st.columns(4)
+    with pk1:
+        st.metric("Line Items", f"{len(items_df):,}")
+    with pk2:
+        st.metric("Unique Products", f"{items_df['catalog_name'].nunique():,}")
+    with pk3:
+        st.metric("Unique Categories", f"{items_df['catalog_code'].nunique():,}")
+    with pk4:
+        st.metric("Total Value", fmt(items_df['final_sum'].sum()))
+
+    # Top products by revenue / quantity / frequency
+    pcol1, pcol2 = st.columns(2)
+
+    with pcol1:
+        st.markdown("#### Top Products by Revenue")
+        top_rev = items_df.groupby('catalog_name').agg(
+            revenue=('final_sum', 'sum'),
+            qty=('quantity', 'sum'),
+            count=('final_sum', 'count')
+        ).reset_index().sort_values('revenue', ascending=False).head(15)
+        if not top_rev.empty:
+            fig = px.bar(
+                top_rev, x='revenue',
+                y=[n[:60] + '...' if len(n) > 60 else n for n in top_rev['catalog_name']],
+                orientation='h', labels={'x': 'Revenue', 'y': ''},
+                color='revenue', color_continuous_scale='Oranges',
+                hover_data={'qty': ':,.0f', 'count': ':,.0f'}
+            )
+            fig.update_layout(yaxis={'categoryorder': 'total ascending'},
+                              height=550, showlegend=False,
+                              margin=dict(l=20, r=20, t=10, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-        with pr2:
-            st.markdown("**By Frequency**")
-            top_freq = _pn[notes_col].value_counts().head(15)
-            fig = px.bar(x=top_freq.values,
-                         y=[n[:50] + '...' if len(n) > 50 else n for n in top_freq.index],
-                         orientation='h', labels={'x': 'Count', 'y': ''},
-                         color=top_freq.values, color_continuous_scale='Viridis')
-            fig.update_layout(height=500, showlegend=False, margin=dict(l=20, r=20, t=10, b=20))
+    with pcol2:
+        st.markdown("#### Top Products by Quantity")
+        top_qty = items_df.groupby('catalog_name').agg(
+            qty=('quantity', 'sum'),
+            revenue=('final_sum', 'sum'),
+            count=('final_sum', 'count')
+        ).reset_index().sort_values('qty', ascending=False).head(15)
+        if not top_qty.empty and top_qty['qty'].sum() > 0:
+            fig = px.bar(
+                top_qty, x='qty',
+                y=[n[:60] + '...' if len(n) > 60 else n for n in top_qty['catalog_name']],
+                orientation='h', labels={'x': 'Quantity', 'y': ''},
+                color='qty', color_continuous_scale='Blues',
+                hover_data={'revenue': ':,.0f', 'count': ':,.0f'}
+            )
+            fig.update_layout(yaxis={'categoryorder': 'total ascending'},
+                              height=550, showlegend=False,
+                              margin=dict(l=20, r=20, t=10, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No quantity data")
+
+    # Product treemap
+    st.markdown("#### Product Distribution")
+    top20 = items_df.groupby('catalog_name')['final_sum'].sum().sort_values(ascending=False).head(20)
+    if len(top20) > 1:
+        tree = pd.DataFrame({
+            'product': [p[:60] + '...' if len(p) > 60 else p for p in top20.index],
+            'group': 'All Products',
+            'amount': top20.values
+        })
+        fig = px.treemap(tree, path=['group', 'product'], values='amount',
+                         color='amount', color_continuous_scale='Viridis', height=450)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Category analysis (by catalog_code)
+    if items_df['catalog_code'].nunique() > 1:
+        st.markdown("#### Category Analysis")
+        cat_agg = items_df.groupby('catalog_code').agg(
+            revenue=('final_sum', 'sum'),
+            items=('final_sum', 'count'),
+            unique_products=('catalog_name', 'nunique')
+        ).reset_index().sort_values('revenue', ascending=False).head(15)
+
+        cat_display = cat_agg.rename(columns={
+            'catalog_code': 'Category Code',
+            'revenue': 'Revenue',
+            'items': 'Line Items',
+            'unique_products': 'Unique Products'
+        })
+        st.dataframe(cat_display, use_container_width=True, hide_index=True,
+                     column_config={'Revenue': st.column_config.NumberColumn(format="%.0f")})
+
+    # Monthly product trend (top 5)
+    if items_df['factura_date'].notna().any():
+        st.markdown("#### Top 5 Products — Monthly Trend")
+        top5_names = items_df.groupby('catalog_name')['final_sum'].sum().sort_values(ascending=False).head(5).index.tolist()
+        if top5_names:
+            trend_df = items_df[items_df['catalog_name'].isin(top5_names)].copy()
+            trend_df['factura_date'] = pd.to_datetime(trend_df['factura_date'])
+            trend_df['month'] = trend_df['factura_date'].dt.to_period('M').dt.to_timestamp()
+            trend_agg = trend_df.groupby(['month', 'catalog_name'])['final_sum'].sum().reset_index()
+            trend_agg['catalog_name'] = trend_agg['catalog_name'].apply(
+                lambda x: x[:40] + '...' if len(x) > 40 else x)
+            fig = px.line(trend_agg, x='month', y='final_sum', color='catalog_name',
+                          markers=True, labels={'final_sum': 'Revenue', 'month': ''},
+                          title='')
+            fig.update_layout(height=400, margin=dict(l=20, r=20, t=10, b=20),
+                              legend=dict(orientation='h', yanchor='bottom', y=-0.3))
             st.plotly_chart(fig, use_container_width=True)
 
-        # Treemap
-        top20 = _pn.groupby(notes_col)['_amt'].sum().sort_values(ascending=False).head(20)
-        if len(top20) > 1:
-            tree = pd.DataFrame({
-                'product': [p[:50] + '...' if len(p) > 50 else p for p in top20.index],
-                'group': 'Sales', 'amount': top20.values
-            })
-            fig = px.treemap(tree, path=['group', 'product'], values='amount',
-                             color='amount', color_continuous_scale='Viridis', height=450)
-            st.plotly_chart(fig, use_container_width=True)
+    # Searchable product table
+    with st.expander("Product Details Table"):
+        search = st.text_input("Search products", placeholder="Product name or code...",
+                               key="prod_search_tbl")
+        detail = items_df.groupby(['catalog_code', 'catalog_name']).agg(
+            Revenue=('final_sum', 'sum'),
+            Quantity=('quantity', 'sum'),
+            Items=('final_sum', 'count'),
+            Customers=('buyer_tin' if prod_type == 'OUT' else 'seller_tin', 'nunique')
+        ).reset_index().rename(columns={'catalog_code': 'Code', 'catalog_name': 'Product'})
+        detail = detail.sort_values('Revenue', ascending=False)
+
+        if search:
+            mask = (detail['Product'].str.contains(search, case=False, na=False) |
+                    detail['Code'].str.contains(search, case=False, na=False))
+            detail = detail[mask]
+
+        st.dataframe(detail.head(200), use_container_width=True, hide_index=True,
+                     column_config={
+                         'Revenue': st.column_config.NumberColumn(format="%.0f"),
+                         'Quantity': st.column_config.NumberColumn(format="%.2f"),
+                     })
+        st.caption(f"Showing top {min(200, len(detail))} of {len(detail):,} products")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Section 6: Counterparty Table + Risk Analysis
