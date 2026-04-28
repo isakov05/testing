@@ -32,6 +32,35 @@ def get_all_companies(min_invoices: int = 10) -> pd.DataFrame:
     return pd.read_sql_query(query, engine, params={'min_inv': min_invoices})
 
 
+def load_raw_invoices(tin: str, invoice_type: Optional[str] = None) -> pd.DataFrame:
+    """Load invoices with original column names (no renaming)."""
+    if not tin:
+        return pd.DataFrame()
+
+    engine = get_db_engine()
+
+    if invoice_type == 'OUT':
+        where = "seller_tin = %(tin)s"
+    elif invoice_type == 'IN':
+        where = "buyer_tin = %(tin)s"
+    else:
+        where = "(seller_tin = %(tin)s OR buyer_tin = %(tin)s)"
+
+    query = f"""
+        SELECT
+            id, factura_no, factura_date, contract_no, contract_date,
+            seller_tin, seller_name, buyer_tin, buyer_name,
+            summa, delivery_sum, vat_sum, delivery_sum_with_vat,
+            factoring_status, factoring_request_id,
+            synced_at, created_at
+        FROM integration.invoices
+        WHERE {where}
+        ORDER BY factura_date DESC
+    """
+
+    return pd.read_sql_query(query, engine, params={'tin': tin})
+
+
 def load_integration_invoices_by_tin(tin: str, invoice_type: Optional[str] = None) -> pd.DataFrame:
     """
     Load invoices for a specific company TIN (not linked to user).

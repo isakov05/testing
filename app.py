@@ -36,11 +36,9 @@ def main() -> None:
 
     # Single page app — run the analytics page directly
     pages = [
-        st.Page("pages/invoice_analytics.py", title="Invoice Analytics", icon="📊"),
-        st.Page("pages/analytics.py", title="Business Overview", icon="📈"),
+        st.Page("pages/dashboard.py", title="Dashboard", icon="📊"),
+        st.Page("pages/invoice_analytics.py", title="Invoice Analytics", icon="📈"),
         st.Page("pages/file_upload.py", title="File Upload", icon="📂"),
-        st.Page("pages/14_Risk_engine.py", title="Risk Engine", icon="🤖"),
-        st.Page("pages/07_Sales_Analytics.py", title="Sales Analytics", icon="📉")
     ]
 
     nav = st.navigation(pages)
