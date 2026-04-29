@@ -183,8 +183,17 @@ class RiskEngine:
             'Номер договора': 'contract_number',
         }
         
-        df = df.rename(columns=col_mapping)
-        
+        # Only rename if target doesn't already exist, and each target is claimed once
+        safe_rename = {}
+        claimed = set(df.columns)
+        for src, tgt in col_mapping.items():
+            if src in df.columns and tgt not in claimed:
+                safe_rename[src] = tgt
+                claimed.add(tgt)
+        df = df.rename(columns=safe_rename)
+        # Drop any remaining duplicate column names
+        df = df.loc[:, ~df.columns.duplicated(keep='first')]
+
         # Ensure contract_number column exists
         if 'contract_number' not in df.columns:
             df['contract_number'] = ''
@@ -247,8 +256,15 @@ class RiskEngine:
             'Payment Purpose': 'payment_purpose',
             'Назначение платежа': 'payment_purpose'
         }
-        pay_df = pay_df.rename(columns=col_mapping)
-        
+        safe_rename = {}
+        claimed = set(pay_df.columns)
+        for src, tgt in col_mapping.items():
+            if src in pay_df.columns and tgt not in claimed:
+                safe_rename[src] = tgt
+                claimed.add(tgt)
+        pay_df = pay_df.rename(columns=safe_rename)
+        pay_df = pay_df.loc[:, ~pay_df.columns.duplicated(keep='first')]
+
         # Ensure payment_purpose column exists
         if 'payment_purpose' not in pay_df.columns:
             pay_df['payment_purpose'] = ''

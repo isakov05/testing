@@ -7,14 +7,12 @@ from utils.column_mappings import apply_column_mappings
 from utils.bank_statement_processor import process_bank_statement_with_types
 from utils.smart_column_mapper import apply_smart_column_mapping
 from utils.bank_format_fixer import fix_complex_bank_format
-from utils.db_operations import (
-    save_invoices_to_db,
-    save_bank_transactions_to_db,
-    save_reconciliation_to_db,
+from utils.session_loader import (
+    store_invoices,
+    store_bank_transactions,
+    store_reconciliation,
     load_user_invoices,
     load_user_bank_transactions,
-    load_user_reconciliation,
-    get_upload_history
 )
 
 # Get language
@@ -25,36 +23,7 @@ st.set_page_config(page_title="File Upload & Processing", page_icon="📁", layo
 
 protect_page()
 
-# Auto-load user's data from database on page load
-if 'data_loaded_from_db' not in st.session_state:
-    current_username = st.session_state.get('username', 'anonymous')
-    current_user_id = st.session_state.get('user_id', 'anonymous')
-
-    try:
-        # Load all user data from database into session state
-        invoices_in_df = load_user_invoices(current_user_id, 'IN')
-        if not invoices_in_df.empty:
-            st.session_state.invoices_in_processed = invoices_in_df
-
-        invoices_out_df = load_user_invoices(current_user_id, 'OUT')
-        if not invoices_out_df.empty:
-            st.session_state.invoices_out_processed = invoices_out_df
-
-        bank_df = load_user_bank_transactions(current_user_id)
-        if not bank_df.empty:
-            st.session_state.bank_statements_processed = bank_df
-
-        recon_ar_df = load_user_reconciliation(current_user_id, 'IN')
-        if not recon_ar_df.empty:
-            st.session_state.reconciliation_ar_processed = recon_ar_df
-
-        recon_ap_df = load_user_reconciliation(current_user_id, 'OUT')
-        if not recon_ap_df.empty:
-            st.session_state.reconciliation_ap_processed = recon_ap_df
-
-        st.session_state.data_loaded_from_db = True
-    except Exception as e:
-        st.warning(f"⚠️ Could not load data from database: {str(e)}")
+# Session-only mode: data lives in session_state for the duration of the browser session.
 
 
 # Initialize file processing states
@@ -1337,39 +1306,13 @@ with col_process2:
                         errors.append(f"Invoices In [{file.name}]: {error}")
 
                 if processed_dfs:
-                    # Save each file to database separately to preserve file tracking
                     total_inserted = 0
-                    total_skipped = 0
-                    dup_tables = []
                     for df, filename in processed_dfs:
-                        # Column debug (uncomment to troubleshoot upload issues)
-                        # st.caption(f"[{filename}]: {len(df)} rows, columns: {list(df.columns)}")
-                        inserted, skipped, error, dup_df = save_invoices_to_db(
-                            df, current_user_id, 'IN', filename, current_username
-                        )
-                        if error:
-                            errors.append(f"DB Error [{filename}]: {error}")
-                        else:
-                            total_inserted += inserted
-                            total_skipped += skipped
-                        if dup_df is not None and not dup_df.empty:
-                            dup_df = dup_df.copy()
-                            dup_df['Category'] = 'Invoices IN'
-                            dup_tables.append(dup_df)
-
-                    # Load all user invoices from DB into session state
-                    st.session_state.invoices_in_processed = load_user_invoices(current_user_id, 'IN')
+                        store_invoices(df, 'IN')
+                        total_inserted += len(df)
                     processed_categories += 1
-
-                    # Show processing summary
-                    total_in_db = len(st.session_state.invoices_in_processed) if st.session_state.invoices_in_processed is not None else 0
-                    if total_inserted > 0:
-                        st.success(f"✅ Inserted {total_inserted} new invoice(s). Total in database: {total_in_db}")
-                    if total_skipped > 0:
-                        st.info(f"ℹ️ Skipped {total_skipped} duplicate invoice(s). Total in database: {total_in_db}")
-                        if dup_tables:
-                            with st.expander("📋 View Duplicate Details"):
-                                st.dataframe(pd.concat(dup_tables, ignore_index=True))
+                    total_in_session = len(st.session_state.get('invoices_in_processed', pd.DataFrame()))
+                    st.success(f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}")
 
                 progress_bar.progress(0.20)
 
@@ -1387,39 +1330,13 @@ with col_process2:
                         errors.append(f"Invoices Out [{file.name}]: {error}")
 
                 if processed_dfs:
-                    # Save each file to database separately to preserve file tracking
                     total_inserted = 0
-                    total_skipped = 0
-                    dup_tables = []
                     for df, filename in processed_dfs:
-                        # Column debug (uncomment to troubleshoot upload issues)
-                        # st.caption(f"[{filename}]: {len(df)} rows, columns: {list(df.columns)}")
-                        inserted, skipped, error, dup_df = save_invoices_to_db(
-                            df, current_user_id, 'OUT', filename, current_username
-                        )
-                        if error:
-                            errors.append(f"DB Error [{filename}]: {error}")
-                        else:
-                            total_inserted += inserted
-                            total_skipped += skipped
-                        if dup_df is not None and not dup_df.empty:
-                            dup_df = dup_df.copy()
-                            dup_df['Category'] = 'Invoices OUT'
-                            dup_tables.append(dup_df)
-
-                    # Load all user invoices from DB into session state
-                    st.session_state.invoices_out_processed = load_user_invoices(current_user_id, 'OUT')
+                        store_invoices(df, 'OUT')
+                        total_inserted += len(df)
                     processed_categories += 1
-
-                    # Show processing summary
-                    total_in_db = len(st.session_state.invoices_out_processed) if st.session_state.invoices_out_processed is not None else 0
-                    if total_inserted > 0:
-                        st.success(f"✅ Inserted {total_inserted} new invoice(s). Total in database: {total_in_db}")
-                    if total_skipped > 0:
-                        st.info(f"ℹ️ Skipped {total_skipped} duplicate invoice(s). Total in database: {total_in_db}")
-                        if dup_tables:
-                            with st.expander("📋 View Duplicate Details"):
-                                st.dataframe(pd.concat(dup_tables, ignore_index=True))
+                    total_in_session = len(st.session_state.get('invoices_out_processed', pd.DataFrame()))
+                    st.success(f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}")
 
                 progress_bar.progress(0.40)
 
@@ -1437,35 +1354,13 @@ with col_process2:
                         errors.append(f"Bank Statement [{file.name}]: {error}")
 
                 if processed_dfs:
-                    # Save each file to database separately to preserve file tracking
                     total_inserted = 0
-                    total_skipped = 0
-                    dup_tables = []
                     for df, filename in processed_dfs:
-                        inserted, skipped, error, dup_df = save_bank_transactions_to_db(
-                            df, current_user_id, filename, current_username
-                        )
-                        if error:
-                            errors.append(f"DB Error [{filename}]: {error}")
-                        else:
-                            total_inserted += inserted
-                            total_skipped += skipped
-                        if dup_df is not None and not dup_df.empty:
-                            dup_tables.append(dup_df)
-
-                    # Load all user bank transactions from DB into session state
-                    st.session_state.bank_statements_processed = load_user_bank_transactions(current_user_id)
+                        store_bank_transactions(df)
+                        total_inserted += len(df)
                     processed_categories += 1
-
-                    # Show processing summary
-                    total_in_db = len(st.session_state.bank_statements_processed) if st.session_state.bank_statements_processed is not None else 0
-                    if total_inserted > 0:
-                        st.success(f"✅ Inserted {total_inserted} new transaction(s). Total in database: {total_in_db}")
-                    if total_skipped > 0:
-                        st.info(f"ℹ️ Skipped {total_skipped} duplicate transaction(s). Total in database: {total_in_db}")
-                        if dup_tables:
-                            with st.expander("📋 View Duplicate Details"):
-                                st.dataframe(pd.concat(dup_tables, ignore_index=True))
+                    total_in_session = len(st.session_state.get('bank_statements_processed', pd.DataFrame()))
+                    st.success(f"✅ Loaded {total_inserted} transaction(s). Total in session: {total_in_session}")
 
                 progress_bar.progress(0.60)
 
@@ -1476,22 +1371,9 @@ with col_process2:
 
                 df_processed, error = process_reconciliation_report(reconciliation_file)
                 if error is None and df_processed is not None:
-                    # Save to database
-                    inserted, skipped, db_error, dup_df = save_reconciliation_to_db(
-                        df_processed, current_user_id, 'OUT', reconciliation_file.name, current_username
-                    )
-                    if db_error:
-                        errors.append(f"DB Error [{reconciliation_file.name}]: {db_error}")
-                    else:
-                        # Load all user reconciliation records from DB
-                        st.session_state.reconciliation_ar_processed = load_user_reconciliation(current_user_id, 'IN')
-                        processed_categories += 1
-
-                        if skipped > 0:
-                            st.info(f"ℹ️ Skipped {skipped} duplicate reconciliation record(s)")
-                            if dup_df is not None and not dup_df.empty:
-                                st.markdown("#### Duplicates - Reconciliation AR")
-                                st.dataframe(dup_df)
+                    store_reconciliation(df_processed, 'AR')
+                    processed_categories += 1
+                    st.success(f"✅ Loaded {len(df_processed)} reconciliation record(s).")
                 else:
                     errors.append(f"Reconciliation Report [{reconciliation_file.name}]: {error}")
 
@@ -1504,22 +1386,9 @@ with col_process2:
 
                 df_processed, error = process_reconciliation_report(reconciliation_file)
                 if error is None and df_processed is not None:
-                    # Save to database
-                    inserted, skipped, db_error, dup_df = save_reconciliation_to_db(
-                        df_processed, current_user_id, 'IN', reconciliation_file.name, current_username
-                    )
-                    if db_error:
-                        errors.append(f"DB Error [{reconciliation_file.name}]: {db_error}")
-                    else:
-                        # Load all user reconciliation records from DB
-                        st.session_state.reconciliation_ap_processed = load_user_reconciliation(current_user_id, 'OUT')
-                        processed_categories += 1
-
-                        if skipped > 0:
-                            st.info(f"ℹ️ Skipped {skipped} duplicate reconciliation record(s)")
-                            if dup_df is not None and not dup_df.empty:
-                                st.markdown("#### Duplicates - Reconciliation AP")
-                                st.dataframe(dup_df)
+                    store_reconciliation(df_processed, 'AP')
+                    processed_categories += 1
+                    st.success(f"✅ Loaded {len(df_processed)} reconciliation record(s).")
                 else:
                     errors.append(f"Reconciliation Report [{reconciliation_file.name}]: {error}")
 
@@ -1534,7 +1403,7 @@ with col_process2:
                 for error in errors:
                     st.error(f"  • {error}")
             else:
-                st.success(f"✅ Successfully processed {processed_categories} data categories and saved to database!")
+                st.success(f"✅ Successfully processed {processed_categories} data categories (stored in session)!")
 
 # Processing status
 st.divider()
@@ -1753,51 +1622,21 @@ st.divider()
 st.subheader("📋 " + ("История загрузок" if lang == "ru" else "Upload History"))
 
 with st.expander("📊 " + ("Показать историю загрузок" if lang == "ru" else "Show Upload History")):
-    try:
-        current_username = st.session_state.get('username', 'anonymous')
-        history_df = get_upload_history(st.session_state.get('user_id', 'anonymous'), limit=20)
-
-        if not history_df.empty:
-            # Format the dataframe for display
-            history_df['upload_date'] = pd.to_datetime(history_df['upload_date']).dt.strftime('%Y-%m-%d %H:%M')
-            history_df['completed_at'] = pd.to_datetime(history_df['completed_at']).dt.strftime('%Y-%m-%d %H:%M')
-
-            # Translate data types
-            type_translation = {
-                'invoice_in': '📥 Invoices In',
-                'invoice_out': '📤 Invoices Out',
-                'bank_statement': '🏦 Bank Statement',
-                'reconciliation_ar': '📑 Reconciliation AR',
-                'reconciliation_ap': '📑 Reconciliation AP'
-            }
-            history_df['data_type'] = history_df['data_type'].map(type_translation)
-
-            # Status emoji
-            status_emoji = {
-                'completed': '✅',
-                'processing': '⏳',
-                'failed': '❌'
-            }
-            history_df['processing_status'] = history_df['processing_status'].apply(lambda x: f"{status_emoji.get(x, '❓')} {x}")
-
-            st.dataframe(
-                history_df,
-                column_config={
-                    "filename": "File Name",
-                    "data_type": "Type",
-                    "records_count": st.column_config.NumberColumn("Records", format="%d"),
-                    "duplicates_skipped": st.column_config.NumberColumn("Duplicates", format="%d"),
-                    "processing_status": "Status",
-                    "upload_date": "Uploaded",
-                    "completed_at": "Completed"
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-        else:
-            st.info("📭 " + ("Нет истории загрузок" if lang == "ru" else "No upload history found"))
-    except Exception as e:
-        st.error(f"Error loading upload history: {str(e)}")
+    rows = []
+    for key, label in [
+        ('invoices_in_processed', '📥 Invoices In'),
+        ('invoices_out_processed', '📤 Invoices Out'),
+        ('bank_statements_processed', '🏦 Bank Statement'),
+        ('reconciliation_ar_processed', '📑 Reconciliation AR'),
+        ('reconciliation_ap_processed', '📑 Reconciliation AP'),
+    ]:
+        df = st.session_state.get(key)
+        if df is not None and not df.empty:
+            rows.append({'Type': label, 'Records': len(df), 'Status': '✅ In session'})
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("📭 " + ("Нет загруженных данных в сессии" if lang == "ru" else "No data uploaded in this session"))
 
 # Data Management section
 st.divider()
@@ -1806,75 +1645,44 @@ st.subheader("🗂️ " + ("Управление данными" if lang == "ru"
 management_col1, management_col2 = st.columns(2)
 
 with management_col1:
-    st.markdown("##### " + ("Обновить данные" if lang == "ru" else "Refresh Data"))
-    if st.button(
-        "🔄 " + ("Загрузить данные из базы" if lang == "ru" else "Reload Data from Database"),
-        use_container_width=True,
-        help=("Перезагрузить все данные из базы данных" if lang == "ru" else "Reload all data from database")
-    ):
-        current_username = st.session_state.get('username', 'anonymous')
-
-        try:
-            # Reload all data from database
-            st.session_state.invoices_in_processed = load_user_invoices(st.session_state.get('user_id', 'anonymous'), 'IN')
-            st.session_state.invoices_out_processed = load_user_invoices(st.session_state.get('user_id', 'anonymous'), 'OUT')
-            st.session_state.bank_statements_processed = load_user_bank_transactions(st.session_state.get('user_id', 'anonymous'))
-            st.session_state.reconciliation_ar_processed = load_user_reconciliation(st.session_state.get('user_id', 'anonymous'), 'AR')
-            st.session_state.reconciliation_ap_processed = load_user_reconciliation(st.session_state.get('user_id', 'anonymous'), 'AP')
-
-            # Clear cache
-            st.cache_data.clear()
-
-            st.success("✅ " + ("Данные успешно перезагружены!" if lang == "ru" else "Data reloaded successfully!"))
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Error reloading data: {str(e)}")
-
-with management_col2:
-    st.markdown("##### " + ("Очистить данные" if lang == "ru" else "Clear Data"))
-
-    # Add warning about database deletion
-    st.warning("⚠️ " + ("Это удалит данные из базы данных (необратимо)" if lang == "ru" else "This will delete data from database (irreversible)"))
+    st.markdown("##### " + ("Сбросить данные" if lang == "ru" else "Clear Session Data"))
+    st.info("⚠️ " + ("Данные хранятся только в сессии браузера" if lang == "ru" else "Data is stored in your browser session only — upload files again after clearing."))
 
     if st.session_state.get('confirm_delete'):
-        st.warning("⚠️ " + ("Вы уверены? Это удалит ВСЕ ваши данные!" if lang == "ru" else "Are you sure? This will delete ALL your data!"))
+        st.warning("⚠️ " + ("Вы уверены? Это очистит все загруженные данные!" if lang == "ru" else "Are you sure? This will clear ALL uploaded data from the session!"))
         col_yes, col_no = st.columns(2)
         with col_yes:
-            if st.button("✅ " + ("Да, удалить" if lang == "ru" else "Yes, delete"), type="primary", use_container_width=True):
-                from utils.db_operations import delete_user_data
-                success, error = delete_user_data(st.session_state.get('user_id', 'anonymous'))
-                if success:
-                    file_keys = [
-                        'invoices_in_uploaded', 'invoices_in_processed',
-                        'invoices_out_uploaded', 'invoices_out_processed',
-                        'bank_statements_uploaded', 'bank_statements_processed',
-                        'reconciliation_uploaded', 'reconciliation_processed',
-                        'reconciliation_ar_uploaded', 'reconciliation_ar_processed',
-                        'reconciliation_ap_uploaded', 'reconciliation_ap_processed',
-                        'data_loaded_from_db', 'confirm_delete'
-                    ]
-                    for key in file_keys:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    st.cache_data.clear()
-                    st.success("✅ " + ("Все данные успешно удалены!" if lang == "ru" else "All data deleted successfully!"))
-                    st.rerun()
-                else:
-                    st.error(f"❌ Error deleting data: {error}")
-                    del st.session_state.confirm_delete
+            if st.button("✅ " + ("Да, очистить" if lang == "ru" else "Yes, clear"), type="primary", use_container_width=True):
+                file_keys = [
+                    'invoices_in_uploaded', 'invoices_in_processed',
+                    'invoices_out_uploaded', 'invoices_out_processed',
+                    'bank_statements_uploaded', 'bank_statements_processed',
+                    'reconciliation_uploaded', 'reconciliation_processed',
+                    'reconciliation_ar_uploaded', 'reconciliation_ar_processed',
+                    'reconciliation_ap_uploaded', 'reconciliation_ap_processed',
+                    'invoice_items_processed', 'confirm_delete',
+                ]
+                for key in file_keys:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.cache_data.clear()
+                st.success("✅ " + ("Данные очищены!" if lang == "ru" else "Session data cleared!"))
+                st.rerun()
         with col_no:
             if st.button("❌ " + ("Отмена" if lang == "ru" else "Cancel"), use_container_width=True):
                 del st.session_state.confirm_delete
                 st.rerun()
     else:
         if st.button(
-            "🗑️ " + ("Удалить все мои данные" if lang == "ru" else "Delete All My Data"),
+            "🗑️ " + ("Очистить все данные сессии" if lang == "ru" else "Clear All Session Data"),
             use_container_width=True,
             type="secondary",
-            help=("Удаляет все ваши данные из базы данных" if lang == "ru" else "Deletes all your data from the database")
         ):
             st.session_state.confirm_delete = True
             st.rerun()
+
+with management_col2:
+    pass
 
 # Navigation info
 if processed_any:

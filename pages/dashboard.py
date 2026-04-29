@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 
 from auth.db_authenticator import protect_page
-from utils.integration_loader import (
+from utils.session_loader import (
     load_raw_invoices,
     load_integration_items_by_tin,
     get_user_company_tin,
@@ -32,7 +32,7 @@ if not user_id:
 
 company_tin = get_user_company_tin(str(user_id))
 if not company_tin:
-    st.error("No company linked to your account.")
+    st.info("Upload invoice files on the **File Upload** page to get started.")
     st.stop()
 
 # ─── Top Bar: Period + Direction Toggle ───

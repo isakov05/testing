@@ -10,17 +10,19 @@ import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 
 from auth.db_authenticator import protect_page
-from utils.db_operations import load_user_invoices, load_user_bank_transactions
-from utils.integration_loader import (
+from utils.session_loader import (
+    load_user_invoices,
+    load_user_bank_transactions,
     load_integration_invoices,
     load_integration_invoices_by_tin,
     load_integration_items_by_tin,
     get_user_company_tin,
     get_all_companies,
+    get_company_name,
+    get_all_invoices_and_payments,
+    calculate_counterparty_lookback_period,
 )
-from utils.db_helper import get_db_engine
 from utils.risk_engine import RiskEngine, load_risk_config
-from utils.risk_queries import get_all_invoices_and_payments, calculate_counterparty_lookback_period
 
 protect_page()
 
@@ -91,24 +93,10 @@ uid = str(user_id)
 # Get the company tied to this user
 company_tin = get_user_company_tin(uid)
 if not company_tin:
-    st.error("No company linked to your account. Contact admin to assign a company TIN.")
+    st.info("Upload invoice files on the **File Upload** page to get started.")
     st.stop()
 
-# Look up company name from the dataset
-@st.cache_data(ttl=600)
-def _get_company_name(tin):
-    from utils.db_helper import get_db_engine
-    engine = get_db_engine()
-    q = """
-        SELECT COALESCE(
-            (SELECT seller_name FROM integration.invoices WHERE seller_tin = %(tin)s LIMIT 1),
-            (SELECT buyer_name FROM integration.invoices WHERE buyer_tin = %(tin)s LIMIT 1)
-        )
-    """
-    result = pd.read_sql_query(q, engine, params={'tin': tin})
-    return result.iloc[0, 0] if not result.empty else 'Unknown'
-
-company_name = _get_company_name(company_tin)
+company_name = get_company_name(company_tin)
 st.caption(f"**{company_name}** (INN: {company_tin})")
 
 # Load from integration.invoices for user's company
@@ -116,7 +104,7 @@ raw_out = load_integration_invoices_by_tin(company_tin, 'OUT')
 raw_in = load_integration_invoices_by_tin(company_tin, 'IN')
 
 if raw_out.empty and raw_in.empty:
-    st.info("No invoices found for your company.")
+    st.info("No invoices found. Upload invoice files on the **File Upload** page.")
     st.stop()
 
 # Check if bank data exists

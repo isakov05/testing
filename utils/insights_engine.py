@@ -341,7 +341,10 @@ def explain_revenue_change(df_current: pd.DataFrame, df_previous: pd.DataFrame,
     if not df_previous.empty:
         prev = df_previous.groupby([cp_col, name_col])[amt_col].sum().reset_index()
         prev.columns = ['tin', 'name', 'previous']
-        merged = cur.merge(prev[['tin', 'previous']], on='tin', how='outer').fillna(0)
+        merged = cur.merge(prev[['tin', 'previous']], on='tin', how='outer')
+        merged['previous'] = merged['previous'].fillna(0)
+        merged['current'] = merged['current'].fillna(0)
+        merged['name'] = merged['name'].fillna('')
     else:
         merged = cur.copy()
         merged['previous'] = 0
@@ -358,8 +361,9 @@ def explain_revenue_change(df_current: pd.DataFrame, df_previous: pd.DataFrame,
     top = merged.sort_values('abs_change', ascending=False).head(top_n)
     contributors = []
     for _, r in top.iterrows():
+        name_val = str(r['name']) if r['name'] and r['name'] not in ('0', 0) else str(r['tin'])
         contributors.append({
-            'name': r['name'] if r['name'] and r['name'] != '0' else r['tin'],
+            'name': name_val,
             'change': r['change'],
             'current': r['current'],
             'previous': r['previous'],

@@ -11,9 +11,8 @@ import os
 import uuid
 import streamlit.components.v1 as components
 
-# Add parent directory to path to import db_helper
+# Add parent directory to path to import cookie_manager
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.db_helper import get_db_connection
 from utils.cookie_manager import write_auth_cookie, read_auth_cookie, clear_auth_cookie
 # from auth.eimzo_authenticator import handle_eimzo_login
 
@@ -33,63 +32,45 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def authenticate_user(username: str, password: str) -> Tuple[bool, Optional[dict]]:
     """
-    Authenticate a user from the database.
+    Authenticate a user from st.secrets['credentials']['users'].
 
-    Args:
-        username: Username to authenticate
-        password: Plain text password
-
-    Returns:
-        (success, user_info) - user_info is None if authentication fails
+    Secrets format (secrets.toml):
+        [credentials.users.admin]
+        password = "plaintext_or_bcrypt_hash"
+        email = "admin@example.com"
+        id = 1
     """
-    conn = None
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        creds = st.secrets.get("credentials", {})
+        users = creds.get("users", {})
 
-        # Get user from database
-        cur.execute(
-            "SELECT id, username, email, password FROM users WHERE username = %s",
-            (username,)
-        )
-
-        result = cur.fetchone()
-
-        if not result:
+        if username not in users:
             return False, None
 
-        user_id, db_username, email, password_hash = result
+        user_data = users[username]
+        stored_password = user_data.get("password", "")
 
-        # Check if password exists
-        if not password_hash:
+        if not stored_password:
             return False, None
 
-        # Verify password
-        if not verify_password(password, password_hash):
-            return False, None
+        # Support both bcrypt hashes and plain-text passwords
+        if stored_password.startswith("$2b$") or stored_password.startswith("$2a$"):
+            if not verify_password(password, stored_password):
+                return False, None
+        else:
+            if password != stored_password:
+                return False, None
 
-        # Update last login
-        cur.execute(
-            "UPDATE users SET last_login = %s WHERE id = %s",
-            (datetime.now(), user_id)
-        )
-        conn.commit()
-
-        # Return user info
         user_info = {
-            'id': user_id,
-            'username': db_username,
-            'email': email
+            'id': user_data.get("id", 1),
+            'username': username,
+            'email': user_data.get("email", ""),
         }
-
         return True, user_info
 
     except Exception as e:
         print(f"Authentication error: {str(e)}")
         return False, None
-    finally:
-        if conn:
-            conn.close()
 
 
 def show_eimzo_login() -> bool:
@@ -248,14 +229,7 @@ def show_login_form() -> bool:
                 st.success("Login successful!")
                 st.rerun()
             else:
-                # Debug: show actual DB error
-                try:
-                    from utils.db_helper import get_db_connection, get_db_config
-                    conn = get_db_connection()
-                    conn.close()
-                    st.error(f"Invalid username or password (DB connected OK, host={get_db_config('host')})")
-                except Exception as db_err:
-                    st.error(f"DB connection failed: {db_err}")
+                st.error("Invalid username or password.")
                 return False
 
     return False
