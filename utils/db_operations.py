@@ -1199,23 +1199,16 @@ def delete_user_data(user_id: str, data_type: Optional[str] = None) -> Tuple[boo
 
         user_id_str = str(user_id)
 
-        # if data_type:
-        #     # Delete specific type
-        #     if data_type in ['invoice_in', 'invoice_out']:
-        #         invoice_type = 'IN' if data_type == 'invoice_in' else 'OUT'
-        #         cur.execute("DELETE FROM invoices WHERE user_id = %s AND invoice_type = %s", (user_id_str, invoice_type))
-        #     elif data_type == 'bank_statement':
-        #         cur.execute("DELETE FROM bank_transactions WHERE user_id = %s", (user_id_str,))
-        #     elif data_type in ['reconciliation_ar', 'reconciliation_ap']:
-        #         record_type = 'AR' if data_type == 'reconciliation_ar' else 'AP'
-        #         cur.execute("DELETE FROM reconciliation_records WHERE user_id = %s AND record_type = %s", (user_id_str, record_type))
-        # else:
-            # Delete all data for user
+        # Delete uploaded data for user
         cur.execute("DELETE FROM invoice_items WHERE user_id = %s", (user_id_str,))
         cur.execute("DELETE FROM invoices WHERE user_id = %s", (user_id_str,))
         cur.execute("DELETE FROM bank_transactions WHERE user_id = %s", (user_id_str,))
         cur.execute("DELETE FROM reconciliation_records WHERE user_id = %s", (user_id_str,))
         cur.execute("DELETE FROM upload_batches WHERE user_id = %s", (user_id_str,))
+
+        # Delete integration data (CBU synced invoices)
+        cur.execute("DELETE FROM integration.invoice_items")
+        cur.execute("DELETE FROM integration.invoices")
 
         conn.commit()
         return True, None
