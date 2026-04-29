@@ -124,6 +124,9 @@ def get_db_connection():
     Get raw psycopg2 connection
     Uses st.secrets if available, otherwise falls back to environment variables
     """
+    db_url = get_db_config('url')
+    if db_url:
+        return psycopg2.connect(db_url, sslmode='require')
     host = get_db_config('host', 'localhost')
     sslmode = 'require' if host != 'localhost' else 'prefer'
     return psycopg2.connect(
