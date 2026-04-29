@@ -19,6 +19,21 @@ from datetime import date, timedelta
 
 # ─── Column normalisation maps ────────────────────────────────────────────────
 
+# Raw CBU/DB export format → canonical English name
+_RAW_CBU_TO_ENGLISH: dict = {
+    'factura_no': 'Document Number',
+    'factura_date': 'Document Date',
+    'seller_tin': 'Seller (Tax ID or PINFL)',
+    'seller_name': 'Seller (Name)',
+    'buyer_tin': 'Buyer (Tax ID or PINFL)',
+    'buyer_name': 'Buyer (Name)',
+    'delivery_sum': 'Supply Value',
+    'vat_sum': 'VAT Amount',
+    'delivery_sum_with_vat': 'Supply Value (incl. VAT)',
+    'contract_no': 'Contract Number',
+    'contract_date': 'Contract Date',
+}
+
 # Every known Russian/English variant → canonical English name
 _TO_ENGLISH: dict = {
     'Номер документ': 'Document Number',
@@ -71,19 +86,27 @@ _TO_RAW: dict = {
 }
 
 
+def _is_raw_cbu_format(df: pd.DataFrame) -> bool:
+    """Return True if the DataFrame looks like a raw CBU/DB export (snake_case columns)."""
+    cbu_cols = set(_RAW_CBU_TO_ENGLISH.keys())
+    return len(cbu_cols & set(df.columns)) >= 3
+
+
 def normalize_to_english(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename all known Russian column variants to standard English names.
+    """Rename all known column variants (Russian or raw CBU) to standard English names.
     Each target name is only used once — first matching source wins."""
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
     rename = {}
     claimed = set(df.columns)
-    for src, tgt in _TO_ENGLISH.items():
-        if src in df.columns and tgt not in claimed:
-            rename[src] = tgt
-            claimed.add(tgt)
+    # Choose mapping: raw CBU format takes priority when detected
+    mappings = [_RAW_CBU_TO_ENGLISH, _TO_ENGLISH] if _is_raw_cbu_format(df) else [_TO_ENGLISH]
+    for mapping in mappings:
+        for src, tgt in mapping.items():
+            if src in df.columns and tgt not in claimed:
+                rename[src] = tgt
+                claimed.add(tgt)
     df = df.rename(columns=rename) if rename else df.copy()
-    # Drop any duplicate column names that may have slipped through
     df = df.loc[:, ~df.columns.duplicated(keep='first')]
     return df
 

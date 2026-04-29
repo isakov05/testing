@@ -859,8 +859,14 @@ if cp_rows:
                 cdf['seq'] = cdf.groupby('invoice_number').cumcount() + 1
                 cdf['grp'] = cdf.groupby('invoice_number')['invoice_number'].transform('count')
 
+                def _fmt_inv_num(x):
+                    n = pd.to_numeric(x, errors='coerce')
+                    if pd.notna(n):
+                        return str(int(n)) if n == int(n) else str(n)
+                    return str(x) if pd.notna(x) else '—'
+
                 tbl = pd.DataFrame({
-                    'Invoice': pd.to_numeric(cdf['invoice_number'], errors='coerce'),
+                    'Invoice': cdf['invoice_number'].apply(_fmt_inv_num),
                     'Date': cdf['invoice_date'].apply(lambda x: x.strftime('%d.%m.%Y') if pd.notnull(x) else '—'),
                     'Part': cdf.apply(lambda r: f"{int(r['seq'])}/{int(r['grp'])}", axis=1),
                     'Status': cdf['component_type'].map({'paid': '✅ Paid', 'returned': '↩️ Returned', 'open': '⏳ Unpaid'}),

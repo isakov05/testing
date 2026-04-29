@@ -681,9 +681,11 @@ def process_invoice_file(file_data, file_type):
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
 
-            # Add standardized 'date' column from 'Дата документ'
-            if 'Дата документ' in df.columns:
-                df['date'] = df['Дата документ']
+            # Add standardized 'date' column (Russian, English, or CBU raw format)
+            for _date_src in ['Дата документ', 'Document Date', 'factura_date']:
+                if _date_src in df.columns:
+                    df['date'] = pd.to_datetime(df[_date_src], errors='coerce')
+                    break
 
             return df, None
         else:
@@ -1149,25 +1151,49 @@ with col1:
 
                     uploaded_file.seek(0)  # Reset file pointer
 
-                    # Look for seller INN column
+                    # Find seller and buyer columns — handles Russian and CBU raw format
                     seller_col = None
+                    buyer_col = None
                     for col in test_df.columns:
                         col_lower = str(col).lower()
-                        if 'продавец' in col_lower and ('инн' in col_lower or 'пинфл' in col_lower):
+                        if seller_col is None and (
+                            ('продавец' in col_lower and ('инн' in col_lower or 'пинфл' in col_lower))
+                            or col_lower == 'seller_tin'
+                            or col_lower == 'seller (tax id or pinfl)'
+                        ):
                             seller_col = col
-                            break
+                        if buyer_col is None and (
+                            ('покупатель' in col_lower and ('инн' in col_lower or 'пинфл' in col_lower))
+                            or col_lower == 'buyer_tin'
+                            or col_lower == 'buyer (tax id or pinfl)'
+                        ):
+                            buyer_col = col
 
-                    # Determine type based on column values
-                    if seller_col is not None:
-                        # Check if seller INN is the same for first 100 rows
-                        seller_values = test_df[seller_col].dropna().unique()
-
-                        if len(seller_values) == 1:
-                            # Same seller INN = Invoices Out (we are the seller)
+                    # Determine type: same buyer in all rows = IN, same seller = OUT
+                    if buyer_col is not None and seller_col is not None:
+                        buyer_vals = test_df[buyer_col].dropna().unique()
+                        seller_vals = test_df[seller_col].dropna().unique()
+                        if len(buyer_vals) == 1 and len(seller_vals) > 1:
+                            invoices_in_files.append(uploaded_file)
+                        elif len(seller_vals) == 1 and len(buyer_vals) > 1:
+                            invoices_out_files.append(uploaded_file)
+                        elif len(buyer_vals) <= len(seller_vals):
+                            # Fewer unique buyers → buyer is "us" → IN
+                            invoices_in_files.append(uploaded_file)
+                        else:
+                            invoices_out_files.append(uploaded_file)
+                    elif seller_col is not None:
+                        seller_vals = test_df[seller_col].dropna().unique()
+                        if len(seller_vals) == 1:
                             invoices_out_files.append(uploaded_file)
                         else:
-                            # Multiple seller INNs = Invoices In (we are the buyer)
                             invoices_in_files.append(uploaded_file)
+                    elif buyer_col is not None:
+                        buyer_vals = test_df[buyer_col].dropna().unique()
+                        if len(buyer_vals) == 1:
+                            invoices_in_files.append(uploaded_file)
+                        else:
+                            invoices_out_files.append(uploaded_file)
                     else:
                         # Default to Invoices Out
                         invoices_out_files.append(uploaded_file)
