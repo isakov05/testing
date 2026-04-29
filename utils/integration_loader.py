@@ -116,7 +116,7 @@ def get_user_company_tin(user_id) -> Optional[str]:
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT company_tin FROM users WHERE id = %s", (int(user_id),))
+        cur.execute("SELECT COALESCE(company_tin, company_inn) FROM users WHERE id = %s", (int(user_id),))
         row = cur.fetchone()
         conn.close()
         return row[0] if row and row[0] else None
