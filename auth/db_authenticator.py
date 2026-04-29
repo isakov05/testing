@@ -248,7 +248,14 @@ def show_login_form() -> bool:
                 st.success("Login successful!")
                 st.rerun()
             else:
-                st.error("Invalid username or password")
+                # Debug: show actual DB error
+                try:
+                    from utils.db_helper import get_db_connection, get_db_config
+                    conn = get_db_connection()
+                    conn.close()
+                    st.error(f"Invalid username or password (DB connected OK, host={get_db_config('host')})")
+                except Exception as db_err:
+                    st.error(f"DB connection failed: {db_err}")
                 return False
 
     return False
