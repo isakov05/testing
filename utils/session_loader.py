@@ -143,6 +143,14 @@ def store_reconciliation(df: pd.DataFrame, rec_type: str) -> None:
     st.session_state[key] = df
 
 
+def store_invoice_items(df: pd.DataFrame) -> None:
+    """Store invoice line items in session_state (used by Product Analytics)."""
+    existing = st.session_state.get('invoice_items_processed')
+    if existing is not None and not existing.empty:
+        df = pd.concat([existing, df], ignore_index=True)
+    st.session_state['invoice_items_processed'] = df
+
+
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
 def _get_session_invoices(invoice_type: Optional[str] = None) -> pd.DataFrame:

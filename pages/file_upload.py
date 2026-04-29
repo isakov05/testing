@@ -11,6 +11,7 @@ from utils.session_loader import (
     store_invoices,
     store_bank_transactions,
     store_reconciliation,
+    store_invoice_items,
     load_user_invoices,
     load_user_bank_transactions,
 )
@@ -620,6 +621,37 @@ def show_invoice_bank_diagnostic():
 
     except Exception as e:
         st.error(f"Error in diagnostic: {str(e)}")
+
+def extract_items_from_cbu(df: pd.DataFrame, invoice_type: str):
+    """Parse raw_data JSON column in CBU exports to produce a product items DataFrame."""
+    if 'raw_data' not in df.columns:
+        return None
+    import json
+    rows = []
+    for _, row in df.iterrows():
+        try:
+            data = json.loads(row['raw_data']) if isinstance(row['raw_data'], str) else {}
+        except Exception:
+            data = {}
+        catalog_name = data.get('catalogName', '')
+        if not catalog_name:
+            continue
+        rows.append({
+            'catalog_code': data.get('catalogCode', ''),
+            'catalog_name': catalog_name,
+            'quantity': data.get('productCount', 0),
+            'final_sum': data.get('deliverySumWithVat') or row.get('delivery_sum_with_vat', 0),
+            'factura_date': row.get('factura_date'),
+            'seller_tin': str(row.get('seller_tin', '')),
+            'buyer_tin': str(row.get('buyer_tin', '')),
+            'invoice_type': invoice_type,
+        })
+    if not rows:
+        return None
+    items = pd.DataFrame(rows)
+    items['factura_date'] = pd.to_datetime(items['factura_date'], errors='coerce')
+    return items
+
 
 # File processing functions
 @st.cache_data
@@ -1333,12 +1365,20 @@ with col_process2:
 
                 if processed_dfs:
                     total_inserted = 0
+                    items_count = 0
                     for df, filename in processed_dfs:
                         store_invoices(df, 'IN')
                         total_inserted += len(df)
+                        items = extract_items_from_cbu(df, 'IN')
+                        if items is not None and not items.empty:
+                            store_invoice_items(items)
+                            items_count += len(items)
                     processed_categories += 1
                     total_in_session = len(st.session_state.get('invoices_in_processed', pd.DataFrame()))
-                    st.success(f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}")
+                    msg = f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}"
+                    if items_count:
+                        msg += f" | {items_count} product items extracted for Product Analytics"
+                    st.success(msg)
 
                 progress_bar.progress(0.20)
 
@@ -1357,12 +1397,20 @@ with col_process2:
 
                 if processed_dfs:
                     total_inserted = 0
+                    items_count = 0
                     for df, filename in processed_dfs:
                         store_invoices(df, 'OUT')
                         total_inserted += len(df)
+                        items = extract_items_from_cbu(df, 'OUT')
+                        if items is not None and not items.empty:
+                            store_invoice_items(items)
+                            items_count += len(items)
                     processed_categories += 1
                     total_in_session = len(st.session_state.get('invoices_out_processed', pd.DataFrame()))
-                    st.success(f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}")
+                    msg = f"✅ Loaded {total_inserted} invoice(s). Total in session: {total_in_session}"
+                    if items_count:
+                        msg += f" | {items_count} product items extracted for Product Analytics"
+                    st.success(msg)
 
                 progress_bar.progress(0.40)
 
