@@ -106,6 +106,9 @@ def get_database_url() -> str:
 def get_db_engine():
     """Create SQLAlchemy engine"""
     database_url = get_database_url()
+    host = get_db_config('host', 'localhost')
+    if host != 'localhost':
+        return create_engine(database_url, pool_pre_ping=True, connect_args={'sslmode': 'require'})
     return create_engine(database_url, pool_pre_ping=True)
 
 
@@ -121,12 +124,15 @@ def get_db_connection():
     Get raw psycopg2 connection
     Uses st.secrets if available, otherwise falls back to environment variables
     """
+    host = get_db_config('host', 'localhost')
+    sslmode = 'require' if host != 'localhost' else 'prefer'
     return psycopg2.connect(
-        host=get_db_config('host', 'localhost'),
-        port=get_db_config('port', '5433'),
+        host=host,
+        port=get_db_config('port', '5432'),
         database=get_db_config('name', 'flott_streamlit'),
         user=get_db_config('user', 'postgres'),
-        password=get_db_config('password', 'postgres')
+        password=get_db_config('password', 'postgres'),
+        sslmode=sslmode
     )
 
 
