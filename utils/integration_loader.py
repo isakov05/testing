@@ -112,7 +112,14 @@ def load_integration_invoices_by_tin(tin: str, invoice_type: Optional[str] = Non
 
 
 def get_user_company_tin(user_id) -> Optional[str]:
-    """Get the company TIN/INN linked to a user."""
+    """Get the selected company TIN from session state, or fall back to user's default."""
+    try:
+        import streamlit as st
+        selected = st.session_state.get('selected_company_tin')
+        if selected:
+            return selected
+    except Exception:
+        pass
     try:
         conn = get_db_connection()
         cur = conn.cursor()
