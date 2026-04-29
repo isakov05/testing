@@ -1836,48 +1836,45 @@ with management_col2:
     # Add warning about database deletion
     st.warning("⚠️ " + ("Это удалит данные из базы данных (необратимо)" if lang == "ru" else "This will delete data from database (irreversible)"))
 
-    if st.button(
-        "🗑️ " + ("Удалить все мои данные" if lang == "ru" else "Delete All My Data"),
-        use_container_width=True,
-        type="secondary",
-        help=("Удаляет все ваши данные из базы данных" if lang == "ru" else "Deletes all your data from the database")
-    ):
-        # Add confirmation
-        if 'confirm_delete' not in st.session_state:
-            st.session_state.confirm_delete = True
-            st.warning("⚠️ " + ("Нажмите еще раз для подтверждения удаления" if lang == "ru" else "Click again to confirm deletion"))
-            st.rerun()
-        else:
-            current_username = st.session_state.get('username', 'anonymous')
-
-            from utils.db_operations import delete_user_data
-            success, error = delete_user_data(st.session_state.get('user_id', 'anonymous'))
-
-            if success:
-                # Clear session state
-                file_keys = [
-                    'invoices_in_uploaded', 'invoices_in_processed',
-                    'invoices_out_uploaded', 'invoices_out_processed',
-                    'bank_statements_uploaded', 'bank_statements_processed',
-                    'reconciliation_uploaded', 'reconciliation_processed',
-                    'reconciliation_ar_uploaded', 'reconciliation_ar_processed',
-                    'reconciliation_ap_uploaded', 'reconciliation_ap_processed',
-                    'data_loaded_from_db', 'confirm_delete'
-                ]
-
-                for key in file_keys:
-                    if key in st.session_state:
-                        del st.session_state[key]
-
-                # Clear cache
-                st.cache_data.clear()
-
-                st.success("✅ " + ("Все данные успешно удалены!" if lang == "ru" else "All data deleted successfully!"))
-                st.rerun()
-            else:
-                st.error(f"❌ Error deleting data: {error}")
-                if 'confirm_delete' in st.session_state:
+    if st.session_state.get('confirm_delete'):
+        st.warning("⚠️ " + ("Вы уверены? Это удалит ВСЕ ваши данные!" if lang == "ru" else "Are you sure? This will delete ALL your data!"))
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("✅ " + ("Да, удалить" if lang == "ru" else "Yes, delete"), type="primary", use_container_width=True):
+                from utils.db_operations import delete_user_data
+                success, error = delete_user_data(st.session_state.get('user_id', 'anonymous'))
+                if success:
+                    file_keys = [
+                        'invoices_in_uploaded', 'invoices_in_processed',
+                        'invoices_out_uploaded', 'invoices_out_processed',
+                        'bank_statements_uploaded', 'bank_statements_processed',
+                        'reconciliation_uploaded', 'reconciliation_processed',
+                        'reconciliation_ar_uploaded', 'reconciliation_ar_processed',
+                        'reconciliation_ap_uploaded', 'reconciliation_ap_processed',
+                        'data_loaded_from_db', 'confirm_delete'
+                    ]
+                    for key in file_keys:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    st.cache_data.clear()
+                    st.success("✅ " + ("Все данные успешно удалены!" if lang == "ru" else "All data deleted successfully!"))
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error deleting data: {error}")
                     del st.session_state.confirm_delete
+        with col_no:
+            if st.button("❌ " + ("Отмена" if lang == "ru" else "Cancel"), use_container_width=True):
+                del st.session_state.confirm_delete
+                st.rerun()
+    else:
+        if st.button(
+            "🗑️ " + ("Удалить все мои данные" if lang == "ru" else "Delete All My Data"),
+            use_container_width=True,
+            type="secondary",
+            help=("Удаляет все ваши данные из базы данных" if lang == "ru" else "Deletes all your data from the database")
+        ):
+            st.session_state.confirm_delete = True
+            st.rerun()
 
 # Navigation info
 if processed_any:
