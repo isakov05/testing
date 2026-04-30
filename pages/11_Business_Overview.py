@@ -16,6 +16,7 @@ from utils.session_loader import (
     get_company_name,
     load_user_bank_transactions,
     get_all_invoices_and_payments,
+    calculate_counterparty_lookback_period,
 )
 from utils.risk_engine import RiskEngine, load_risk_config
 
@@ -95,6 +96,10 @@ raw_in  = load_integration_invoices_by_tin(company_tin, 'IN')
 if raw_out.empty and raw_in.empty:
     st.info("No invoices found. Upload invoice files on the **File Upload** page.")
     st.stop()
+
+uid = str(user_id)
+bank_txns = load_user_bank_transactions(uid)
+has_bank_data = not bank_txns.empty
 
 sales      = signed_only(raw_out)
 purchases  = signed_only(raw_in)
@@ -442,161 +447,337 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Section 5 — Risk Analytics Summary
+# Section 5 — Counterparty Overview
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown("---")
-st.markdown("### Risk Analytics")
+st.markdown("### Counterparty Overview")
 
-risk_dir = st.radio(
-    "Portfolio direction", ["AR (Sales / Buyers)", "AP (Purchases / Suppliers)"],
-    horizontal=True, key="bov_risk_dir"
-)
-risk_invoice_type = 'OUT' if 'AR' in risk_dir else 'IN'
+cp_rows = []
+if not sales_p.empty and 'Buyer (Name)' in sales_p.columns:
+    _b = sales_p.copy()
+    _b['_amt'] = pd.to_numeric(_b[AMT], errors='coerce').fillna(0)
+    buyer_agg = _b.groupby(['Buyer (Name)', 'Buyer (Tax ID or PINFL)']).agg(
+        volume=('_amt', 'sum'), count=('_amt', 'count')).reset_index()
+    buyer_agg.columns = ['name', 'inn', 'volume', 'invoices']
+    buyer_agg['type'] = 'Buyer'
+    cp_rows.append(buyer_agg)
 
-RATING_COLOR = {'A': '#10B981', 'B': '#3B82F6', 'C': '#F59E0B', 'D': '#EF4444'}
+if not purchases_p.empty and 'Seller (Name)' in purchases_p.columns:
+    _s = purchases_p.copy()
+    _s['_amt'] = pd.to_numeric(_s[AMT], errors='coerce').fillna(0)
+    seller_agg = _s.groupby(['Seller (Name)', 'Seller (Tax ID or PINFL)']).agg(
+        volume=('_amt', 'sum'), count=('_amt', 'count')).reset_index()
+    seller_agg.columns = ['name', 'inn', 'volume', 'invoices']
+    seller_agg['type'] = 'Supplier'
+    cp_rows.append(seller_agg)
 
-def _run_portfolio_risk(uid, invoice_type):
-    config = load_risk_config()
-    inv_df, pay_df = get_all_invoices_and_payments(uid, invoice_type, 24, date.today())
-    if inv_df.empty:
-        return None, "No invoice data available."
+if cp_rows:
+    cp_df = pd.concat(cp_rows, ignore_index=True)
+    cp_df = cp_df.groupby(['name', 'inn']).agg({
+        'type': lambda x: 'Both' if len(set(x)) > 1 else x.iloc[0],
+        'volume': 'sum', 'invoices': 'sum'
+    }).reset_index().sort_values('volume', ascending=False)
 
-    inn_col = 'buyer_inn' if invoice_type == 'OUT' else 'seller_inn'
-    name_col = 'buyer_name' if invoice_type == 'OUT' else 'seller_name'
-
-    if inn_col not in inv_df.columns:
-        return None, f"Column '{inn_col}' not found in invoice data."
-
-    counterparties = (
-        inv_df.groupby(inn_col)
-        .agg(
-            name=(name_col, 'first') if name_col in inv_df.columns else (inn_col, 'first'),
-            total_exposure=('total_amount', 'sum') if 'total_amount' in inv_df.columns else (inn_col, 'count')
-        )
-        .reset_index()
-        .rename(columns={inn_col: 'inn'})
-        .sort_values('total_exposure', ascending=False)
-        .head(30)
-    )
-
-    engine = RiskEngine(config, uid)
-    components = engine.reconstruct_invoice_components(inv_df, pay_df, invoice_type, date.today())
-
-    results = []
-    for _, row in counterparties.iterrows():
-        inn = str(row['inn']).replace('.0', '').strip()
-        try:
-            profile = engine.calculate_counterparty_risk(inn, components)
-            results.append({
-                'INN': inn,
-                'Name': str(row.get('name', inn))[:45],
-                'Rating': profile.get('rating', 'N/A'),
-                'PD': profile.get('pd', 0),
-                'LGD': profile.get('lgd', 0),
-                'EAD': profile.get('ead_current', 0),
-                'Expected Loss': profile.get('expected_loss', 0),
-                'Credit Limit': profile.get('recommended_limit', 0),
-            })
-        except Exception:
-            continue
-
-    if not results:
-        return None, "Risk engine returned no results."
-    return pd.DataFrame(results), None
-
-
-risk_cache_key = f'bov_risk_results_{risk_invoice_type}'
-
-col_btn, col_clear = st.columns([2, 1])
-with col_btn:
-    if st.button("Run Portfolio Risk Analysis", type="primary", key="bov_run_risk"):
-        with st.spinner("Analysing counterparties…"):
-            risk_df, risk_err = _run_portfolio_risk(str(user_id), risk_invoice_type)
-            if risk_err:
-                st.warning(risk_err)
-            else:
-                st.session_state[risk_cache_key] = risk_df
-with col_clear:
-    if st.button("Clear results", key="bov_clear_risk"):
-        st.session_state.pop(risk_cache_key, None)
-
-risk_df = st.session_state.get(risk_cache_key)
-
-if risk_df is not None and not risk_df.empty:
-    # ── Portfolio KPIs ──
-    rk1, rk2, rk3, rk4 = st.columns(4)
-    with rk1:
-        st.metric("Counterparties Analysed", f"{len(risk_df):,}")
-    with rk2:
-        total_ead = risk_df['EAD'].sum()
-        st.metric("Total Exposure (EAD)", fmt(total_ead))
-    with rk3:
-        avg_pd = risk_df['PD'].mean()
-        st.metric("Avg Probability of Default", f"{avg_pd:.2%}")
-    with rk4:
-        total_el = risk_df['Expected Loss'].sum()
-        st.metric("Total Expected Loss", fmt(total_el))
-
-    st.markdown("")
-
-    chart_col1, chart_col2 = st.columns(2)
-
-    with chart_col1:
-        st.markdown("#### Rating Distribution")
-        rating_counts = risk_df['Rating'].value_counts().reindex(['A', 'B', 'C', 'D'], fill_value=0)
-        colors = [RATING_COLOR.get(r, '#6B7280') for r in rating_counts.index]
-        fig = go.Figure(go.Bar(
-            x=rating_counts.index,
-            y=rating_counts.values,
-            marker_color=colors,
-            text=rating_counts.values,
-            textposition='outside'
-        ))
-        fig.update_layout(
-            height=320, margin=dict(l=20, r=20, t=10, b=20),
-            xaxis_title='Rating', yaxis_title='# Counterparties',
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    with chart_col2:
-        st.markdown("#### Exposure by Rating")
-        exp_by_rating = risk_df.groupby('Rating')['EAD'].sum().reindex(['A', 'B', 'C', 'D']).dropna()
-        colors_pie = [RATING_COLOR.get(r, '#6B7280') for r in exp_by_rating.index]
-        fig = go.Figure(go.Pie(
-            labels=exp_by_rating.index,
-            values=exp_by_rating.values,
-            hole=0.40,
-            marker=dict(colors=colors_pie),
-            textinfo='label+percent'
-        ))
-        fig.update_layout(
-            height=320, margin=dict(l=10, r=10, t=10, b=10),
-            showlegend=True,
-            legend=dict(orientation='h', y=-0.1)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ── Top counterparties table ──
-    st.markdown("#### Top Counterparties by Exposure")
-    display = risk_df.sort_values('EAD', ascending=False).head(15).copy()
-    display['PD'] = display['PD'].apply(lambda x: f"{x:.2%}")
-    display['LGD'] = display['LGD'].apply(lambda x: f"{x:.2%}")
-    display['EAD'] = display['EAD'].apply(lambda x: f"{x:,.0f}")
-    display['Expected Loss'] = display['Expected Loss'].apply(lambda x: f"{x:,.0f}")
-    display['Credit Limit'] = display['Credit Limit'].apply(lambda x: f"{x:,.0f}")
-
-    def _color_rating(val):
-        c = RATING_COLOR.get(val, '#6B7280')
-        return f'background-color: {c}22; color: {c}; font-weight: bold'
+    search = st.text_input("Search counterparty", placeholder="Name or INN...", key="bov_cp_search")
+    if search:
+        mask = (cp_df['name'].str.contains(search, case=False, na=False) |
+                cp_df['inn'].astype(str).str.contains(search, na=False))
+        display_cp = cp_df[mask]
+    else:
+        display_cp = cp_df
 
     st.dataframe(
-        display[['Name', 'INN', 'Rating', 'PD', 'LGD', 'EAD', 'Expected Loss', 'Credit Limit']]
-        .style.applymap(_color_rating, subset=['Rating']),
-        use_container_width=True, hide_index=True
+        display_cp.rename(columns={'name': 'Counterparty', 'inn': 'INN',
+                                    'type': 'Type', 'volume': 'Volume', 'invoices': 'Invoices'}),
+        use_container_width=True, hide_index=True,
+        column_config={'Volume': st.column_config.NumberColumn(format="%.0f")}
     )
-    st.caption(f"Showing top {min(15, len(risk_df))} of {len(risk_df)} counterparties by exposure. "
-               "Full analysis available on the Risk Engine page.")
+    st.caption(f"{len(display_cp)} counterparties")
+
+    # ── Risk Analysis ──
+    if not display_cp.empty:
+        if has_bank_data:
+            options = [f"{r['name']}  ({r['inn']})" for _, r in display_cp.iterrows()]
+            inn_map  = {f"{r['name']}  ({r['inn']})": r['inn']  for _, r in display_cp.iterrows()}
+            name_map = {f"{r['name']}  ({r['inn']})": r['name'] for _, r in display_cp.iterrows()}
+
+            selected = st.selectbox("Select counterparty to analyze", [""] + options, key="bov_risk_cp")
+
+            if selected and st.button("Analyze", type="primary", key="bov_risk_btn"):
+                sel_inn  = str(inn_map[selected]).replace('.0', '').strip()
+                sel_name = name_map[selected]
+
+                with st.spinner(f"Analyzing {sel_name}..."):
+                    lookback = calculate_counterparty_lookback_period(uid, sel_inn, 'OUT')
+                    inv_df, pay_df = get_all_invoices_and_payments(uid, 'OUT', lookback)
+
+                    if not inv_df.empty and 'buyer_inn' in inv_df.columns:
+                        inv_df['buyer_inn'] = inv_df['buyer_inn'].astype(str).str.replace('.0', '', regex=False).str.strip()
+                    if not pay_df.empty and 'counterparty_inn' in pay_df.columns:
+                        pay_df['counterparty_inn'] = pay_df['counterparty_inn'].astype(str).str.replace('.0', '', regex=False).str.strip()
+
+                    config = load_risk_config()
+                    engine = RiskEngine(config, uid)
+                    components = engine.reconstruct_invoice_components(inv_df, pay_df, 'OUT')
+                    risk = engine.calculate_counterparty_risk(sel_inn, components)
+                    cp_components = [c for c in components
+                                     if str(c.get('counterparty_inn', '')).replace('.0', '').strip() == sel_inn]
+
+                st.session_state['bov_risk'] = risk
+                st.session_state['bov_risk_name'] = sel_name
+                st.session_state['bov_risk_inn'] = sel_inn
+                st.session_state['bov_risk_components'] = cp_components
+        else:
+            st.markdown("---")
+            st.markdown("### Risk Analysis")
+            st.markdown("""
+            <div style="position:relative;">
+                <div style="filter:blur(6px); pointer-events:none; opacity:0.5;">
+                    <div style="display:flex; gap:16px; margin-bottom:16px;">
+                        <div style="flex:1; padding:16px; background:#f0fdf4; border-radius:8px; border:2px solid #10B981; text-align:center;">
+                            <div style="font-size:36px; font-weight:bold; color:#10B981;">B</div>
+                            <div style="font-size:12px; color:#6B7280;">Risk Rating</div>
+                        </div>
+                        <div style="flex:1; padding:16px; background:#f9fafb; border-radius:8px;">
+                            <div style="font-size:12px; color:#6B7280;">PD (Prob. of Default)</div>
+                            <div style="font-size:24px; font-weight:600;">3.50%</div>
+                        </div>
+                        <div style="flex:1; padding:16px; background:#f9fafb; border-radius:8px;">
+                            <div style="font-size:12px; color:#6B7280;">LGD (Loss Given Default)</div>
+                            <div style="font-size:24px; font-weight:600;">45.00%</div>
+                        </div>
+                        <div style="flex:1; padding:16px; background:#f9fafb; border-radius:8px;">
+                            <div style="font-size:12px; color:#6B7280;">EAD (Exposure)</div>
+                            <div style="font-size:24px; font-weight:600;">850.2M UZS</div>
+                        </div>
+                        <div style="flex:1; padding:16px; background:#f9fafb; border-radius:8px;">
+                            <div style="font-size:12px; color:#6B7280;">Expected Loss</div>
+                            <div style="font-size:24px; font-weight:600;">13.4M UZS</div>
+                        </div>
+                    </div>
+                </div>
+                <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+                            background:white; padding:24px 40px; border-radius:12px;
+                            box-shadow:0 4px 24px rgba(0,0,0,0.15); text-align:center; z-index:10;">
+                    <div style="font-size:32px; margin-bottom:8px;">🔒</div>
+                    <div style="font-size:18px; font-weight:600; margin-bottom:8px;">Upload Bank Statements to Unlock</div>
+                    <div style="font-size:14px; color:#6B7280; margin-bottom:16px;">
+                        Risk ratings, credit limits, payment behavior,<br>and aging dashboard
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.page_link("pages/file_upload.py", label="Upload Bank Statements", icon="📂")
+            if 'bov_risk' in st.session_state:
+                del st.session_state['bov_risk']
+
+    # ── Display risk results ──
+    if has_bank_data and st.session_state.get('bov_risk'):
+        risk   = st.session_state['bov_risk']
+        r_name = st.session_state.get('bov_risk_name', '')
+        r_inn  = st.session_state.get('bov_risk_inn', '')
+        r_comps = st.session_state.get('bov_risk_components', [])
+
+        st.markdown("---")
+        st.markdown(f"### Risk Analysis: {r_name}")
+        st.caption(f"INN: {r_inn}")
+
+        tab_ov, tab_comp, tab_aging = st.tabs(["Overview", "Components", "Aging"])
+
+        with tab_ov:
+            rating = risk.get('rating', 'N/A')
+            clr = {'A': '#10B981', 'B': '#3B82F6', 'C': '#F59E0B', 'D': '#EF4444'}.get(rating, '#6B7280')
+            o1, o2, o3, o4, o5 = st.columns(5)
+            with o1:
+                st.markdown(f"""
+                <div style="text-align:center; padding:12px; background:{clr}15; border-radius:8px; border:2px solid {clr};">
+                    <div style="font-size:36px; font-weight:bold; color:{clr};">{rating}</div>
+                    <div style="font-size:12px; color:#6B7280;">Rating</div>
+                </div>""", unsafe_allow_html=True)
+            with o2:
+                st.metric("PD", f"{risk.get('pd', 0):.2%}")
+            with o3:
+                st.metric("LGD", f"{risk.get('lgd', 0):.2%}")
+            with o4:
+                st.metric("EAD", fmt(risk.get('ead_current', 0)))
+            with o5:
+                st.metric("Expected Loss", fmt(risk.get('expected_loss', 0)))
+
+            ol1, ol2, ol3 = st.columns(3)
+            with ol1:
+                st.metric("Credit Limit", fmt(risk.get('recommended_limit', 0)))
+            with ol2:
+                feats = risk.get('behavioral_features', {})
+                st.metric("Avg DPD", f"{feats.get('weighted_avg_dpd', 0):.0f} days")
+            with ol3:
+                st.metric("Late Rate", f"{feats.get('late_payment_rate', 0):.0%}")
+
+            just = risk.get('justification', {})
+            if just:
+                with st.expander("Justification"):
+                    for k, v in just.items():
+                        st.markdown(f"**{k.upper()}:** {v}")
+
+            if r_comps:
+                cdf = pd.DataFrame(r_comps)
+                bh1, bh2 = st.columns(2)
+                with bh1:
+                    ts = cdf.groupby('component_type')['component_amount'].sum().reset_index()
+                    ts.columns = ['type', 'amount']
+                    fig = px.pie(ts, values='amount', names='type', title='Status Breakdown',
+                                 color='type', color_discrete_map={'paid': '#10B981', 'open': '#F59E0B', 'returned': '#EF4444'})
+                    fig.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+                with bh2:
+                    paid = cdf[cdf['component_type'] == 'paid']
+                    if not paid.empty:
+                        fig = px.histogram(paid, x='dpd', nbins=20, title='DPD Distribution (Paid)',
+                                           labels={'dpd': 'Days Past Due'})
+                        fig.update_traces(marker_color='#3B82F6')
+                        fig.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
+                        st.plotly_chart(fig, use_container_width=True)
+
+                total_inv = cdf[cdf['component_type'] != 'returned']['component_amount'].sum()
+                if total_inv > 0:
+                    f1, f2, f3, f4 = st.columns(4)
+                    paid_t   = cdf[cdf['component_type'] == 'paid']['component_amount'].sum()
+                    ret_t    = cdf[cdf['component_type'] == 'returned']['component_amount'].sum()
+                    unpaid_t = cdf[cdf['component_type'] == 'open']['component_amount'].sum()
+                    with f1: st.metric("Invoiced",  f"{total_inv:,.0f}")
+                    with f2: st.metric("Paid",      f"{paid_t:,.0f}",   delta=f"{paid_t/total_inv*100:.0f}%")
+                    with f3: st.metric("Returned",  f"{ret_t:,.0f}",    delta=f"{ret_t/total_inv*100:.0f}%",   delta_color="inverse")
+                    with f4: st.metric("Unpaid",    f"{unpaid_t:,.0f}", delta=f"{unpaid_t/total_inv*100:.0f}%", delta_color="inverse")
+
+        with tab_comp:
+            if r_comps:
+                cdf = pd.DataFrame(r_comps)
+                cdf['component_amount'] = cdf['component_amount'].astype(float)
+                cdf['_sort'] = pd.to_datetime(cdf['resolution_date'], errors='coerce')
+                cdf['_open'] = cdf['component_type'] == 'open'
+                cdf = cdf.sort_values(['_open', '_sort']).reset_index(drop=True)
+                cdf = cdf.drop(['_sort', '_open'], axis=1)
+                cdf['seq'] = cdf.groupby('invoice_number').cumcount() + 1
+                cdf['grp'] = cdf.groupby('invoice_number')['invoice_number'].transform('count')
+
+                def _fmt_inv_num(x):
+                    n = pd.to_numeric(x, errors='coerce')
+                    if pd.notna(n):
+                        return str(int(n)) if n == int(n) else str(n)
+                    return str(x) if pd.notna(x) else '—'
+
+                tbl = pd.DataFrame({
+                    'Invoice': cdf['invoice_number'].apply(_fmt_inv_num),
+                    'Date':    cdf['invoice_date'].apply(lambda x: x.strftime('%d.%m.%Y') if pd.notnull(x) else '—'),
+                    'Part':    cdf.apply(lambda r: f"{int(r['seq'])}/{int(r['grp'])}", axis=1),
+                    'Status':  cdf['component_type'].map({'paid': '✅ Paid', 'returned': '↩️ Returned', 'open': '⏳ Unpaid'}),
+                    'Amount':  cdf['component_amount'].apply(lambda x: f"{x:,.0f}"),
+                    'DPD':     cdf['dpd'].apply(lambda x: f"{int(x)}"),
+                    'Bucket':  cdf.get('aging_bucket', '—'),
+                    'Match':   cdf.apply(lambda r: f"Contract ({r.get('contract_number','')})" if r.get('payment_method') == 'contract_match' else 'FIFO' if r.get('payment_method') == 'fifo' else '—', axis=1),
+                })
+
+                def color_row(row):
+                    d = int(row['DPD']); s = row['Status']
+                    if '↩️' in s:
+                        return ['background-color: #ffc107'] * len(row) if d <= 180 else ['background-color: #dc3545; color: white'] * len(row)
+                    elif '⏳' in s:
+                        if d > 180: return ['background-color: #dc3545; color: white'] * len(row)
+                        if d > 90:  return ['background-color: #fd7e14; color: white'] * len(row)
+                        return ['background-color: #fff3cd'] * len(row)
+                    elif '✅' in s:
+                        if d > 90: return ['background-color: #f8d7da'] * len(row)
+                        return ['background-color: #d4edda'] * len(row)
+                    return [''] * len(row)
+
+                st.dataframe(tbl.style.apply(color_row, axis=1),
+                             use_container_width=True, hide_index=True, height=500)
+                csv = tbl.to_csv(index=False)
+                st.download_button("Export CSV", csv, file_name=f"components_{r_inn}.csv", mime="text/csv")
+            else:
+                st.info("No components")
+
+        with tab_aging:
+            if r_comps:
+                cdf = pd.DataFrame(r_comps)
+                series_list = []
+                summaries   = []
+
+                for inv_num in cdf['invoice_number'].unique():
+                    ic = [c for c in r_comps if str(c.get('invoice_number')) == str(inv_num)]
+                    first  = ic[0]
+                    idate  = first.get('invoice_date')
+                    itotal = sum(c['component_amount'] for c in ic if c['component_type'] != 'returned')
+                    if itotal <= 0:
+                        continue
+                    if isinstance(idate, pd.Timestamp): idate = idate.date()
+                    elif isinstance(idate, datetime):   idate = idate.date()
+                    if idate is None:
+                        continue
+
+                    events = {}
+                    for c in ic:
+                        ct, amt = c.get('component_type'), float(c.get('component_amount', 0) or 0)
+                        cd = c.get('resolution_date')
+                        if pd.isna(cd) or amt == 0: continue
+                        if isinstance(cd, pd.Timestamp): cd = cd.date()
+                        elif isinstance(cd, datetime):   cd = cd.date()
+                        if cd < idate: continue
+                        delta = -amt if ct == 'paid' else (amt if ct == 'returned' else 0)
+                        if delta != 0:
+                            events.setdefault(cd, []).append(delta)
+
+                    end_d = max(events.keys()) if events else idate
+                    net   = sum(d for ds in events.values() for d in ds)
+                    if max(itotal + net, 0) > 0.01:
+                        end_d = max(end_d, date.today())
+
+                    recs, bal, cur_d, dn, resolved = [], itotal, idate, 1, None
+                    while cur_d <= end_d and dn <= 2000:
+                        op = bal
+                        ch = sum(events.get(cur_d, []))
+                        bal = max(op + ch, 0)
+                        recs.append({'inv': str(inv_num), 'day': dn, 'date': cur_d,
+                                     'opening': op, 'change': ch, 'closing': bal})
+                        if bal <= 0.01:
+                            resolved = cur_d; break
+                        cur_d += timedelta(days=1); dn += 1
+
+                    if recs:
+                        series_list.append(pd.DataFrame(recs))
+                        summaries.append({'inv': str(inv_num), 'total': itotal,
+                                          'outstanding': bal, 'days': len(recs), 'closed': resolved})
+
+                if series_list:
+                    ad  = pd.concat(series_list, ignore_index=True)
+                    ad['date'] = pd.to_datetime(ad['date'])
+                    agg = ad.groupby('date').agg(
+                        opening=('opening', 'sum'), change=('change', 'sum'), closing=('closing', 'sum')
+                    ).reset_index().sort_values('date')
+                    agg['day'] = range(1, len(agg) + 1)
+
+                    fig = px.line(agg, x='date', y='closing', markers=True,
+                                  labels={'closing': 'Outstanding', 'date': ''})
+                    fig.update_layout(height=350, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    for s in summaries:
+                        sc1, sc2, sc3, sc4 = st.columns(4)
+                        with sc1: st.metric(f"Invoice {s['inv']}", f"{s['total']:,.0f}")
+                        with sc2: st.metric("Outstanding", f"{s['outstanding']:,.0f}")
+                        with sc3: st.metric("Days", s['days'])
+                        with sc4: st.metric("Status", "Closed" if s['closed'] else "Open")
+
+                    with st.expander("Daily Table"):
+                        _t = agg.copy()
+                        _t['date'] = _t['date'].dt.strftime('%d.%m.%Y')
+                        st.dataframe(_t[['day', 'date', 'opening', 'change', 'closing']].rename(
+                            columns={'day': 'Day', 'date': 'Date', 'opening': 'Opening',
+                                     'change': 'Change', 'closing': 'Closing'}
+                        ), use_container_width=True, height=400)
+                else:
+                    st.info("No aging data")
+            else:
+                st.info("No components")
 else:
-    st.info("Click **Run Portfolio Risk Analysis** to calculate PD, LGD, EAD and Expected Loss for all counterparties.")
+    st.info("No counterparty data available")
