@@ -1,12 +1,12 @@
 """
 Business Overview — concise summary page.
-Sections: Key Metrics | Revenue Trends (merged) | Top Buyers & Suppliers | Product Analytics
+Sections: Key Metrics | Revenue Trends (merged) | Top Buyers & Suppliers | Product Analytics | Risk Summary
 """
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from auth.db_authenticator import protect_page
 from utils.session_loader import (
@@ -15,7 +15,9 @@ from utils.session_loader import (
     get_user_company_tin,
     get_company_name,
     load_user_bank_transactions,
+    get_all_invoices_and_payments,
 )
+from utils.risk_engine import RiskEngine, load_risk_config
 
 st.set_page_config(page_title="Business Overview", page_icon="📊", layout="wide")
 protect_page()
@@ -438,3 +440,163 @@ else:
             legend=dict(orientation='h', yanchor='bottom', y=-0.35)
         )
         st.plotly_chart(fig, use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Section 5 — Risk Analytics Summary
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.markdown("---")
+st.markdown("### Risk Analytics")
+
+risk_dir = st.radio(
+    "Portfolio direction", ["AR (Sales / Buyers)", "AP (Purchases / Suppliers)"],
+    horizontal=True, key="bov_risk_dir"
+)
+risk_invoice_type = 'OUT' if 'AR' in risk_dir else 'IN'
+
+RATING_COLOR = {'A': '#10B981', 'B': '#3B82F6', 'C': '#F59E0B', 'D': '#EF4444'}
+
+def _run_portfolio_risk(uid, invoice_type):
+    config = load_risk_config()
+    inv_df, pay_df = get_all_invoices_and_payments(uid, invoice_type, 24, date.today())
+    if inv_df.empty:
+        return None, "No invoice data available."
+
+    inn_col = 'buyer_inn' if invoice_type == 'OUT' else 'seller_inn'
+    name_col = 'buyer_name' if invoice_type == 'OUT' else 'seller_name'
+
+    if inn_col not in inv_df.columns:
+        return None, f"Column '{inn_col}' not found in invoice data."
+
+    counterparties = (
+        inv_df.groupby(inn_col)
+        .agg(
+            name=(name_col, 'first') if name_col in inv_df.columns else (inn_col, 'first'),
+            total_exposure=('total_amount', 'sum') if 'total_amount' in inv_df.columns else (inn_col, 'count')
+        )
+        .reset_index()
+        .rename(columns={inn_col: 'inn'})
+        .sort_values('total_exposure', ascending=False)
+        .head(30)
+    )
+
+    engine = RiskEngine(config, uid)
+    components = engine.reconstruct_invoice_components(inv_df, pay_df, invoice_type, date.today())
+
+    results = []
+    for _, row in counterparties.iterrows():
+        inn = str(row['inn']).replace('.0', '').strip()
+        try:
+            profile = engine.calculate_counterparty_risk(inn, components)
+            results.append({
+                'INN': inn,
+                'Name': str(row.get('name', inn))[:45],
+                'Rating': profile.get('rating', 'N/A'),
+                'PD': profile.get('pd', 0),
+                'LGD': profile.get('lgd', 0),
+                'EAD': profile.get('ead_current', 0),
+                'Expected Loss': profile.get('expected_loss', 0),
+                'Credit Limit': profile.get('recommended_limit', 0),
+            })
+        except Exception:
+            continue
+
+    if not results:
+        return None, "Risk engine returned no results."
+    return pd.DataFrame(results), None
+
+
+risk_cache_key = f'bov_risk_results_{risk_invoice_type}'
+
+col_btn, col_clear = st.columns([2, 1])
+with col_btn:
+    if st.button("Run Portfolio Risk Analysis", type="primary", key="bov_run_risk"):
+        with st.spinner("Analysing counterparties…"):
+            risk_df, risk_err = _run_portfolio_risk(str(user_id), risk_invoice_type)
+            if risk_err:
+                st.warning(risk_err)
+            else:
+                st.session_state[risk_cache_key] = risk_df
+with col_clear:
+    if st.button("Clear results", key="bov_clear_risk"):
+        st.session_state.pop(risk_cache_key, None)
+
+risk_df = st.session_state.get(risk_cache_key)
+
+if risk_df is not None and not risk_df.empty:
+    # ── Portfolio KPIs ──
+    rk1, rk2, rk3, rk4 = st.columns(4)
+    with rk1:
+        st.metric("Counterparties Analysed", f"{len(risk_df):,}")
+    with rk2:
+        total_ead = risk_df['EAD'].sum()
+        st.metric("Total Exposure (EAD)", fmt(total_ead))
+    with rk3:
+        avg_pd = risk_df['PD'].mean()
+        st.metric("Avg Probability of Default", f"{avg_pd:.2%}")
+    with rk4:
+        total_el = risk_df['Expected Loss'].sum()
+        st.metric("Total Expected Loss", fmt(total_el))
+
+    st.markdown("")
+
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("#### Rating Distribution")
+        rating_counts = risk_df['Rating'].value_counts().reindex(['A', 'B', 'C', 'D'], fill_value=0)
+        colors = [RATING_COLOR.get(r, '#6B7280') for r in rating_counts.index]
+        fig = go.Figure(go.Bar(
+            x=rating_counts.index,
+            y=rating_counts.values,
+            marker_color=colors,
+            text=rating_counts.values,
+            textposition='outside'
+        ))
+        fig.update_layout(
+            height=320, margin=dict(l=20, r=20, t=10, b=20),
+            xaxis_title='Rating', yaxis_title='# Counterparties',
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with chart_col2:
+        st.markdown("#### Exposure by Rating")
+        exp_by_rating = risk_df.groupby('Rating')['EAD'].sum().reindex(['A', 'B', 'C', 'D']).dropna()
+        colors_pie = [RATING_COLOR.get(r, '#6B7280') for r in exp_by_rating.index]
+        fig = go.Figure(go.Pie(
+            labels=exp_by_rating.index,
+            values=exp_by_rating.values,
+            hole=0.40,
+            marker=dict(colors=colors_pie),
+            textinfo='label+percent'
+        ))
+        fig.update_layout(
+            height=320, margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=True,
+            legend=dict(orientation='h', y=-0.1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Top counterparties table ──
+    st.markdown("#### Top Counterparties by Exposure")
+    display = risk_df.sort_values('EAD', ascending=False).head(15).copy()
+    display['PD'] = display['PD'].apply(lambda x: f"{x:.2%}")
+    display['LGD'] = display['LGD'].apply(lambda x: f"{x:.2%}")
+    display['EAD'] = display['EAD'].apply(lambda x: f"{x:,.0f}")
+    display['Expected Loss'] = display['Expected Loss'].apply(lambda x: f"{x:,.0f}")
+    display['Credit Limit'] = display['Credit Limit'].apply(lambda x: f"{x:,.0f}")
+
+    def _color_rating(val):
+        c = RATING_COLOR.get(val, '#6B7280')
+        return f'background-color: {c}22; color: {c}; font-weight: bold'
+
+    st.dataframe(
+        display[['Name', 'INN', 'Rating', 'PD', 'LGD', 'EAD', 'Expected Loss', 'Credit Limit']]
+        .style.applymap(_color_rating, subset=['Rating']),
+        use_container_width=True, hide_index=True
+    )
+    st.caption(f"Showing top {min(15, len(risk_df))} of {len(risk_df)} counterparties by exposure. "
+               "Full analysis available on the Risk Engine page.")
+else:
+    st.info("Click **Run Portfolio Risk Analysis** to calculate PD, LGD, EAD and Expected Loss for all counterparties.")
