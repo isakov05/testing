@@ -67,6 +67,7 @@ def main() -> None:
     pages = [
         st.Page("pages/dashboard.py", title="Dashboard", icon="📊"),
         st.Page("pages/invoice_analytics.py", title="Invoice Analytics", icon="📈"),
+        st.Page("pages/11_Business_Overview.py", title="Business Overview", icon="🗂️"),
         st.Page("pages/file_upload.py", title="File Upload", icon="📂"),
     ]
 
